@@ -28,7 +28,7 @@ if ! command -v docker &> /dev/null; then
   sudo systemctl enable docker
   
   # Add current user to the docker group
-  sudo usermod -aG docker $USER
+  sudo usermod -aG docker "$USER"
   
   # Apply group changes without logging out
   if [ "$(id -u)" -ne 0 ]; then
