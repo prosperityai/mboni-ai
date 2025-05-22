@@ -1,0 +1,333 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template to deploy MBONIAI on EC2'
+
+Parameters:
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.medium
+    AllowedValues: [t3.micro, t3.small, t3.medium, t3.large, t3.xlarge]
+    ConstraintDescription: Must be a valid EC2 instance type.
+  
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: String
+    Default: TRO_SERVER
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
+  
+  VpcId:
+    Description: VPC to launch the instance in
+    Type: String
+    Default: vpc-0e19c600a936c5ccc
+  
+  SubnetId:
+    Description: Subnet to launch the instance in
+    Type: String
+    Default: subnet-00e3c3625d5c75b4c
+  
+  SSHLocation:
+    Description: The IP address range that can SSH to the EC2 instance
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: Must be a valid IP CIDR range of the form x.x.x.x/x.
+
+Resources:
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH, HTTP, and HTTPS access
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHLocation
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+  
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      SecurityGroupIds: [!Ref EC2SecurityGroup]
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetId
+      ImageId: ami-0c7217cdde317cfec  # Ubuntu 20.04 LTS Server
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            DeleteOnTermination: true
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          
+          # Update system packages
+          apt-get update -y
+          apt-get upgrade -y
+          
+          # Install Docker and other dependencies
+          apt-get install -y apt-transport-https ca-certificates curl software-properties-common git jq
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+          add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+          apt-get update -y
+          apt-get install -y docker-ce docker-ce-cli containerd.io
+          
+          # Install Docker Compose
+          curl -L "https://github.com/docker/compose/releases/download/v2.23.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          
+          # Start Docker service
+          systemctl start docker
+          systemctl enable docker
+          
+          # Add ubuntu user to docker group (Ubuntu default user)
+          usermod -a -G docker ubuntu
+          
+          # Install AWS CLI and ECR credential helper
+          apt-get install -y awscli
+          apt-get install -y amazon-ecr-credential-helper
+          
+          # Set up Docker credential helper for ECR
+          mkdir -p /home/ubuntu/.docker
+          echo '{
+            "credHelpers": {
+              "533267319731.dkr.ecr.us-east-1.amazonaws.com": "ecr-login"
+            }
+          }' > /home/ubuntu/.docker/config.json
+          chown -R ubuntu:ubuntu /home/ubuntu/.docker
+          
+          # Create app directory
+          mkdir -p /home/ubuntu/mboniai
+          cd /home/ubuntu/mboniai
+          
+          # Create docker-compose.yaml for MBONIAI
+          cat > docker-compose.yaml << 'EOF'
+          version: '3.1'
+
+          services:
+            api:
+              image: 533267319731.dkr.ecr.us-east-1.amazonaws.com/mboniai-api:latest
+              restart: always
+              environment:
+                # Database settings
+                DB_USERNAME: postgres
+                DB_PASSWORD: mboniai123456
+                DB_HOST: db
+                DB_PORT: 5432
+                DB_DATABASE: mboniai
+                # Redis settings
+                REDIS_HOST: redis
+                REDIS_PORT: 6379
+                REDIS_PASSWORD: mboniai123456
+                # Vector DB settings
+                VECTOR_STORE: weaviate
+                WEAVIATE_ENDPOINT: http://weaviate:8080
+                # Branding
+                CONSOLE_API_URL: ''
+                CONSOLE_WEB_URL: ''
+                SERVICE_API_URL: ''
+                APP_API_URL: ''
+                APP_WEB_URL: ''
+              depends_on:
+                - db
+                - redis
+                - weaviate
+              networks:
+                - mboniai-network
+
+            worker:
+              image: 533267319731.dkr.ecr.us-east-1.amazonaws.com/mboniai-worker:latest
+              restart: always
+              environment:
+                # Same environment as API
+                DB_USERNAME: postgres
+                DB_PASSWORD: mboniai123456
+                DB_HOST: db
+                DB_PORT: 5432
+                DB_DATABASE: mboniai
+                REDIS_HOST: redis
+                REDIS_PORT: 6379
+                REDIS_PASSWORD: mboniai123456
+                VECTOR_STORE: weaviate
+                WEAVIATE_ENDPOINT: http://weaviate:8080
+              depends_on:
+                - api
+                - db
+                - redis
+                - weaviate
+              networks:
+                - mboniai-network
+
+            web:
+              image: 533267319731.dkr.ecr.us-east-1.amazonaws.com/mboniai-web:latest
+              restart: always
+              environment:
+                CONSOLE_API_URL: ''
+                APP_API_URL: ''
+              networks:
+                - mboniai-network
+
+            db:
+              image: postgres:15-alpine
+              restart: always
+              environment:
+                POSTGRES_USER: postgres
+                POSTGRES_PASSWORD: mboniai123456
+                POSTGRES_DB: mboniai
+                PGDATA: /var/lib/postgresql/data/pgdata
+              volumes:
+                - postgres_data:/var/lib/postgresql/data
+              networks:
+                - mboniai-network
+
+            redis:
+              image: redis:6-alpine
+              restart: always
+              command: redis-server --requirepass mboniai123456
+              volumes:
+                - redis_data:/data
+              networks:
+                - mboniai-network
+
+            weaviate:
+              image: semitechnologies/weaviate:1.19.0
+              restart: always
+              environment:
+                WEAVIATE_PERSISTENCE_DATA_PATH: /var/lib/weaviate
+                WEAVIATE_QUERY_DEFAULTS_LIMIT: 25
+                WEAVIATE_AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+                WEAVIATE_DEFAULT_VECTORIZER_MODULE: 'none'
+                WEAVIATE_CLUSTER_HOSTNAME: 'node1'
+              volumes:
+                - weaviate_data:/var/lib/weaviate
+              networks:
+                - mboniai-network
+
+            nginx:
+              image: nginx:latest
+              restart: always
+              ports:
+                - "80:80"
+                - "443:443"
+              volumes:
+                - ./nginx/conf.d:/etc/nginx/conf.d
+              depends_on:
+                - api
+                - web
+              networks:
+                - mboniai-network
+
+          networks:
+            mboniai-network:
+              driver: bridge
+
+          volumes:
+            postgres_data:
+            redis_data:
+            weaviate_data:
+          EOF
+          
+          # Create nginx configuration directory
+          mkdir -p /home/ec2-user/mboniai/nginx/conf.d
+          
+          # Create default nginx configuration
+          cat > /home/ec2-user/mboniai/nginx/conf.d/default.conf << 'EOF'
+          server {
+              listen 80;
+              server_name _;
+
+              client_max_body_size 15M;
+
+              # Web app
+              location / {
+                  proxy_pass http://web:3000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+
+              # Console API
+              location /console/api/ {
+                  proxy_pass http://api:5001/console/api/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_read_timeout 300s;
+              }
+
+              # Public API
+              location /api/ {
+                  proxy_pass http://api:5001/api/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_read_timeout 300s;
+              }
+          }
+          EOF
+          
+          # Set correct permissions
+          chown -R ubuntu:ubuntu /home/ubuntu/mboniai
+          
+          # Start MBONIAI with Docker Compose
+          cd /home/ubuntu/mboniai
+          docker-compose up -d
+          
+          # Create a script to update MBONIAI
+          cat > /home/ubuntu/update-mboniai.sh << 'EOF'
+          #!/bin/bash
+          cd /home/ubuntu/mboniai
+          aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 533267319731.dkr.ecr.us-east-1.amazonaws.com
+          docker-compose pull
+          docker-compose down
+          docker-compose up -d
+          EOF
+          
+          chmod +x /home/ubuntu/update-mboniai.sh
+          chown ubuntu:ubuntu /home/ubuntu/update-mboniai.sh
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+Outputs:
+  InstanceId:
+    Description: ID of the EC2 instance
+    Value: !Ref EC2Instance
+  
+  PublicIP:
+    Description: Public IP address of the EC2 instance
+    Value: !GetAtt EC2Instance.PublicIp
+  
+  WebsiteURL:
+    Description: URL for the MBONIAI application
+    Value: !Sub http://${EC2Instance.PublicIp}
