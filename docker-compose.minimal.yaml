@@ -1,0 +1,160 @@
+version: '3'
+
+services:
+  api:
+    image: langgenius/dify-api:1.4.0
+    restart: always
+    environment:
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=difyai123456
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_DATABASE=dify
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=difyai123456
+      - REDIS_USE_SSL=false
+      - CELERY_BROKER_URL=redis://:difyai123456@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:difyai123456@redis:6379/0
+      - CONSOLE_API_URL=http://localhost:5001
+      - APP_API_URL=http://localhost:5001
+      - SERVICE_API_URL=http://localhost:5001
+      - CONSOLE_WEB_URL=http://localhost:3000
+      - APP_WEB_URL=http://localhost:3000
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=/app/api/storage
+      - SECRET_KEY=sk-9f73s3ljTXVcMT3Blb3ljTqtsKiGHXVcMT3BlbkFJLK7U
+      - WEB_API_CORS_ALLOW_ORIGINS=http://localhost:3000
+      - CONSOLE_CORS_ALLOW_ORIGINS=http://localhost:3000
+      - MIGRATION_ENABLED=true
+      - PLUGINS_ENABLE=true
+      - PLUGIN_DAEMON_ENABLED=true
+      - PLUGIN_DAEMON_HOST=plugin_daemon
+      - PLUGIN_DAEMON_URL=http://plugin_daemon:5002
+      - PLUGIN_DAEMON_PORT=5002
+      - PLUGIN_DAEMON_KEY=lYkiYYT6owG+71oLerGzA7GXCgOT++6ovaezWAjpCjf+Sjc3ZtU+qUEi
+      - DIFY_INNER_API_KEY=QaHbTe77CtuXmsfyhR7+vRjI/+XbV1AaFy691iy+kGDv2Jvy0/eAh8Y1
+    volumes:
+      - ./volumes/app/storage:/app/api/storage
+    ports:
+      - "5001:5001"
+    depends_on:
+      - db
+      - redis
+      - plugin_daemon
+
+  web:
+    image: langgenius/dify-web:1.4.0
+    restart: always
+    environment:
+      - CONSOLE_API_URL=http://localhost:5001
+      - APP_API_URL=http://localhost:5001
+      - NEXT_PUBLIC_APP_NAME=MBONIAI
+      - NEXT_PUBLIC_SITE_TITLE=MBONIAI - AI Application Development Platform
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  db:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=difyai123456
+      - POSTGRES_DB=dify
+    volumes:
+      - ./volumes/db/data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:6-alpine
+    restart: always
+    command: redis-server --requirepass difyai123456
+    volumes:
+      - ./volumes/redis/data:/data
+    ports:
+      - "6379:6379"
+      
+  plugin_daemon:
+    image: langgenius/dify-plugin-daemon:0.0.10-local
+    restart: always
+    volumes:
+      - ./volumes/plugin_daemon:/app/storage
+    ports:
+      - "5002:5002"
+    environment:
+      # Basic settings
+      - SERVER_KEY=lYkiYYT6owG+71oLerGzA7GXCgOT++6ovaezWAjpCjf+Sjc3ZtU+qUEi
+      - SERVER_PORT=5002
+      # Database connection
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=difyai123456
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_DATABASE=dify_plugin
+      # Redis connection
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=difyai123456
+      - REDIS_USE_SSL=false
+      # Dify integration
+      - DIFY_INNER_API_KEY=QaHbTe77CtuXmsfyhR7+vRjI/+XbV1AaFy691iy+kGDv2Jvy0/eAh8Y1
+      - DIFY_INNER_API_URL=http://api:5001
+      # Storage configuration
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_ROOT=/app/storage
+      - PLUGIN_WORKING_PATH=/app/storage/cwd
+      - PLUGIN_INSTALLED_PATH=plugin
+      - PLUGIN_PACKAGE_CACHE_PATH=plugin_packages
+      - PLUGIN_MEDIA_CACHE_PATH=assets
+      # Plugin settings
+      - PLUGIN_MAX_PACKAGE_SIZE=52428800
+      - PLUGIN_MAX_EXECUTION_TIMEOUT=600
+      - PLUGIN_PYTHON_ENV_INIT_TIMEOUT=120
+      - FORCE_VERIFYING_SIGNATURE=false
+      - PLUGIN_PPROF_ENABLED=false
+      # Remote installing
+      - PLUGIN_REMOTE_INSTALLING_HOST=0.0.0.0
+      - PLUGIN_REMOTE_INSTALLING_PORT=5003
+      
+  worker:
+    image: langgenius/dify-api:1.4.0
+    restart: always
+    working_dir: /app/api
+    entrypoint: []
+    command: ["/app/api/.venv/bin/celery", "-A", "app.celery", "worker", "--loglevel=info"]
+    environment:
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=difyai123456
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_DATABASE=dify
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=difyai123456
+      - REDIS_USE_SSL=false
+      - CELERY_BROKER_URL=redis://:difyai123456@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:difyai123456@redis:6379/0
+      - CONSOLE_API_URL=http://localhost:5001
+      - APP_API_URL=http://localhost:5001
+      - SERVICE_API_URL=http://localhost:5001
+      - CONSOLE_WEB_URL=http://localhost:3000
+      - APP_WEB_URL=http://localhost:3000
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=/app/api/storage
+      - SECRET_KEY=sk-9f73s3ljTXVcMT3Blb3ljTqtsKiGHXVcMT3BlbkFJLK7U
+      - PLUGINS_ENABLE=true
+      - PLUGIN_DAEMON_ENABLED=true
+      - PLUGIN_DAEMON_HOST=plugin_daemon
+      - PLUGIN_DAEMON_URL=http://plugin_daemon:5002
+      - PLUGIN_DAEMON_PORT=5002
+      - PLUGIN_DAEMON_KEY=lYkiYYT6owG+71oLerGzA7GXCgOT++6ovaezWAjpCjf+Sjc3ZtU+qUEi
+      - DIFY_INNER_API_KEY=QaHbTe77CtuXmsfyhR7+vRjI/+XbV1AaFy691iy+kGDv2Jvy0/eAh8Y1
+    volumes:
+      - ./volumes/app/storage:/app/api/storage
+    depends_on:
+      - db
+      - redis
+      - plugin_daemon
